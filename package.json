@@ -1,0 +1,33 @@
+{
+  "name": "wgctrl",
+  "version": "1.0.0",
+  "description": "WireGuard Control API for Node.js",
+  "license": "MIT",
+  "author": "snek",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/devsnek/wgctrl-js.git"
+  },
+  "bugs": {
+    "url": "https://github.com/devsnek/wgctrl-js/issues"
+  },
+  "homepage": "https://github.com/devsnek/wgctrl-js#readme",
+  "main": "src/index.js",
+  "exports": {
+    ".": {
+      "require": "src/index.js",
+      "import": "src/index.mjs"
+    }
+  },
+  "dependencies": {
+    "bindings": "^1.5.0",
+    "node-addon-api": "^3.0.0"
+  },
+  "devDependencies": {
+    "gen-esm-wrapper": "^1.0.6"
+  },
+  "scripts": {
+    "prepublish": "gen-esm-wrapper src/index.js src/index.mjs",
+    "test": "echo \"Error: no test specified\" && exit 1"
+  }
+}
