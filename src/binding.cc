@@ -1,11 +1,20 @@
-#include <napi.h>
 #include <arpa/inet.h>
 #include <errno.h>
+#include <napi.h>
 #include <string.h>
 
 extern "C" {
 #include <wireguard.h>
 }
+
+class ScopeGuard {
+ public:
+  explicit ScopeGuard(std::function<void()>&& f) : f_(std::move(f)) {}
+  ~ScopeGuard() { f_(); }
+
+ private:
+  std::function<void()> f_;
+};
 
 Napi::Value GetDevices(const Napi::CallbackInfo& info) {
   auto env = info.Env();
@@ -55,10 +64,11 @@ Napi::Value GetDevice(const Napi::CallbackInfo& info) {
 
   std::string name = info[0].As<Napi::String>();
 
-  wg_device* device;
+  wg_device* device = nullptr;
   if (wg_get_device(&device, name.c_str()) != 0) {
     NAPI_THROW(Napi::Error::New(env, strerror(errno)), {});
   }
+  ScopeGuard guard([device]() { wg_free_device(device); });
 
   auto js_device = Napi::Object::New(env);
   js_device["name"] = Napi::String::New(env, device->name);
@@ -86,7 +96,8 @@ Napi::Value GetDevice(const Napi::CallbackInfo& info) {
       char buf6[INET6_ADDRSTRLEN];
       switch (peer->endpoint.addr.sa_family) {
         case AF_INET: {
-          if (inet_ntop(AF_INET, &peer->endpoint.addr4.sin_addr.s_addr, buf, sizeof(buf)) == nullptr) {
+          if (inet_ntop(AF_INET, &peer->endpoint.addr4.sin_addr.s_addr, buf,
+                        sizeof(buf)) == nullptr) {
             NAPI_THROW(Napi::Error::New(env, strerror(errno)), {});
           }
           std::string buf_s{buf};
@@ -96,7 +107,8 @@ Napi::Value GetDevice(const Napi::CallbackInfo& info) {
           break;
         }
         case AF_INET6: {
-          if (inet_ntop(AF_INET6, &peer->endpoint.addr6.sin6_addr.s6_addr, buf6, sizeof(buf6)) == nullptr) {
+          if (inet_ntop(AF_INET6, &peer->endpoint.addr6.sin6_addr.s6_addr, buf6,
+                        sizeof(buf6)) == nullptr) {
             NAPI_THROW(Napi::Error::New(env, strerror(errno)), {});
           }
           std::string buf_s{"["};
@@ -112,8 +124,9 @@ Napi::Value GetDevice(const Napi::CallbackInfo& info) {
     }
 
     {
-      auto duration = std::chrono::seconds{peer->last_handshake_time.tv_sec} +
-                      std::chrono::nanoseconds{peer->last_handshake_time.tv_nsec};
+      auto duration =
+          std::chrono::seconds{peer->last_handshake_time.tv_sec} +
+          std::chrono::nanoseconds{peer->last_handshake_time.tv_nsec};
       auto ns = std::chrono::duration_cast<std::chrono::nanoseconds>(duration);
       js_peer["lastHandhakeTime"] = Napi::BigInt::New(env, ns.count());
     }
@@ -121,7 +134,7 @@ Napi::Value GetDevice(const Napi::CallbackInfo& info) {
     js_peer["rxBytes"] = Napi::BigInt::New(env, peer->rx_bytes);
     js_peer["txBytes"] = Napi::BigInt::New(env, peer->tx_bytes);
     js_peer["persistentKeepaliveInterval"] =
-      Napi::Number::New(env, peer->persistent_keepalive_interval);
+        Napi::Number::New(env, peer->persistent_keepalive_interval);
 
     auto allowed_ips = Napi::Array::New(env);
     js_peer["allowedIPs"] = allowed_ips;
@@ -134,7 +147,8 @@ Napi::Value GetDevice(const Napi::CallbackInfo& info) {
 
       switch (allowedip->family) {
         case AF_INET: {
-          if (inet_ntop(AF_INET, &allowedip->ip4, buf, sizeof(buf)) == nullptr) {
+          if (inet_ntop(AF_INET, &allowedip->ip4, buf, sizeof(buf)) ==
+              nullptr) {
             NAPI_THROW(Napi::Error::New(env, strerror(errno)), {});
           }
           std::string buf_s{buf};
@@ -145,7 +159,8 @@ Napi::Value GetDevice(const Napi::CallbackInfo& info) {
           break;
         }
         case AF_INET6: {
-          if (inet_ntop(AF_INET6, &allowedip->ip6, buf6, sizeof(buf6)) == nullptr) {
+          if (inet_ntop(AF_INET6, &allowedip->ip6, buf6, sizeof(buf6)) ==
+              nullptr) {
             NAPI_THROW(Napi::Error::New(env, strerror(errno)), {});
           }
           std::string buf_s{buf6};
@@ -164,8 +179,6 @@ Napi::Value GetDevice(const Napi::CallbackInfo& info) {
     index += 1;
   }
 
-  free(device);
-
   return js_device;
 }
 
@@ -174,13 +187,16 @@ Napi::Value SetDevice(const Napi::CallbackInfo& info) {
 
   auto js_device = info[0].As<Napi::Object>();
   wg_device* device = new wg_device{};
+  ScopeGuard guard([device]() { wg_free_device(device); });
 
   {
     std::string name = js_device.Get("name").As<Napi::String>();
-    memcpy(device->name, name.c_str(), sizeof(device->name));
+    memcpy(device->name, name.c_str(),
+           std::min(sizeof(device->name), strlen(name.c_str())));
   }
   device->ifindex = js_device.Get("ifindex").As<Napi::Number>();
-  device->flags = static_cast<wg_device_flags>(js_device.Get("flags").As<Napi::Number>().Uint32Value());
+  device->flags = static_cast<wg_device_flags>(
+      js_device.Get("flags").As<Napi::Number>().Uint32Value());
   if (!JSToKey(env, js_device["publicKey"], device->public_key)) {
     return {};
   }
@@ -188,7 +204,8 @@ Napi::Value SetDevice(const Napi::CallbackInfo& info) {
     return {};
   }
   device->fwmark = js_device.Get("fwmark").As<Napi::Number>().Uint32Value();
-  device->listen_port = js_device.Get("listenPort").As<Napi::Number>().Uint32Value();
+  device->listen_port =
+      js_device.Get("listenPort").As<Napi::Number>().Uint32Value();
 
   {
     auto js_peers = js_device.Get("peers").As<Napi::Array>();
@@ -197,7 +214,8 @@ Napi::Value SetDevice(const Napi::CallbackInfo& info) {
       auto js_peer = js_peers.Get(i).As<Napi::Object>();
       wg_peer* peer = new wg_peer{};
       peer->next_peer = device->first_peer;
-      peer->flags = static_cast<wg_peer_flags>(js_peer.Get("flags").As<Napi::Number>().Uint32Value());
+      peer->flags = static_cast<wg_peer_flags>(
+          js_peer.Get("flags").As<Napi::Number>().Uint32Value());
       if (!JSToKey(env, js_peer["publicKey"], peer->public_key)) {
         return {};
       }
@@ -210,7 +228,8 @@ Napi::Value SetDevice(const Napi::CallbackInfo& info) {
         if (v6) {
           auto pos = endpoint_s.find_first_of("]:");
           auto ip = endpoint_s.substr(1, pos);
-          if (inet_pton(AF_INET6, ip.c_str(), &peer->endpoint.addr6.sin6_addr.s6_addr) != 1) {
+          if (inet_pton(AF_INET6, ip.c_str(),
+                        &peer->endpoint.addr6.sin6_addr.s6_addr) != 1) {
             NAPI_THROW(Napi::TypeError::New(env, "Invalid IPv6 address"), {});
           }
           auto port = endpoint_s.substr(pos + 1);
@@ -218,14 +237,18 @@ Napi::Value SetDevice(const Napi::CallbackInfo& info) {
         } else {
           auto pos = endpoint_s.find_first_of(":");
           auto ip = endpoint_s.substr(0, pos);
-          if (inet_pton(AF_INET, ip.c_str(), &peer->endpoint.addr4.sin_addr.s_addr) != 1) {
+          if (inet_pton(AF_INET, ip.c_str(),
+                        &peer->endpoint.addr4.sin_addr.s_addr) != 1) {
             NAPI_THROW(Napi::TypeError::New(env, "Invalid IPv4 address"), {});
           }
           auto port = endpoint_s.substr(pos + 1);
           peer->endpoint.addr6.sin6_port = stoi(port);
         }
       }
-      peer->persistent_keepalive_interval = js_peer.Get("persistentKeepaliveInterval").As<Napi::Number>().Uint32Value();
+      peer->persistent_keepalive_interval =
+          js_peer.Get("persistentKeepaliveInterval")
+              .As<Napi::Number>()
+              .Uint32Value();
       {
         auto allowed_ips = js_peer.Get("allowedIPs").As<Napi::Array>();
         uint32_t length = allowed_ips.Length();
@@ -262,9 +285,7 @@ Napi::Value SetDevice(const Napi::CallbackInfo& info) {
     }
   }
 
-  int ret = wg_set_device(device);
-  wg_free_device(device);
-  if (ret != 0) {
+  if (wg_set_device(device) != 0) {
     NAPI_THROW(Napi::Error::New(info.Env(), strerror(errno)), {});
   }
 
@@ -316,7 +337,8 @@ Napi::Object Init(Napi::Env env, Napi::Object exports) {
   exports["deleteDevice"] = Napi::Function::New(env, DeleteDevice);
   exports["generatePublicKey"] = Napi::Function::New(env, GeneratePublicKey);
   exports["generatePrivateKey"] = Napi::Function::New(env, GeneratePrivateKey);
-  exports["generatePresharedKey"] = Napi::Function::New(env, GeneratePresharedKey);
+  exports["generatePresharedKey"] =
+      Napi::Function::New(env, GeneratePresharedKey);
 
   return exports;
 }
